@@ -1,3 +1,5 @@
 flask
 student-ai-kit-hafizmdph
 gunicorn
+groq
+python-dotenv
