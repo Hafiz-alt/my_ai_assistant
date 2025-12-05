@@ -1,17 +1,14 @@
 from flask import Flask, render_template, request
 from student_ai_kit import AIAssistant
-from dotenv import load_dotenv
 import os
-
-# Load env vars
-load_dotenv()
 
 app = Flask(__name__)
 
-# --- Monkeypatch Start ---
-# The installed library uses a decommissioned model and expects dict access on response objects.
-# We patch the client to fix these issues without modifying the library code.
+# --- Configuration ---
+# Hardcoding key to ensure it works immediately
+os.environ["GROQ_API_KEY"] = "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"
 
+# --- Monkeypatch Start ---
 class MessageWrapper:
     def __init__(self, original_message):
         self._msg = original_message
@@ -24,49 +21,74 @@ def apply_patch(assistant_instance):
     original_create = assistant_instance.client.chat.completions.create
     
     def patched_create(*args, **kwargs):
-        # Fix model
         if 'model' in kwargs:
             kwargs['model'] = 'llama-3.1-8b-instant'
-            
         response = original_create(*args, **kwargs)
-        
-        # Fix response format
         for choice in response.choices:
             choice.message = MessageWrapper(choice.message)
-            
         return response
         
     assistant_instance.client.chat.completions.create = patched_create
-
 # --- Monkeypatch End ---
 
-# Initialize and patch
+# Initialize
+assistant = None
 try:
+    print(f"Initializing AI with Key: {os.environ['GROQ_API_KEY'][:10]}...")
     assistant = AIAssistant()
     apply_patch(assistant)
+    print("Success: AIAssistant initialized.")
 except Exception as e:
-    print(f"Warning: Could not initialize AIAssistant: {e}")
+    print(f"CRITICAL ERROR: Could not initialize AIAssistant: {e}")
     assistant = None
+
+# Global Chat History (In-Memory)
+chat_history = []
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
-    response = None
-    user_input = ""
+    global chat_history
     
     if request.method == 'POST':
         user_input = request.form.get('user_input')
-        if user_input and assistant:
-            try:
-                # Get response from the library
-                raw_response = assistant.get_response(user_input)
-                # Format the response
-                response = assistant.format_response(raw_response)
-            except Exception as e:
-                response = f"Error: {str(e)}"
-        elif not assistant:
-            response = "Error: AI Assistant not initialized. Check API Key."
+        
+        # Clear History Command
+        if user_input and user_input.lower() == '/clear':
+            chat_history = []
+            return render_template('index.html', chat_history=chat_history)
+
+        if user_input:
+            # Add User Message
+            chat_history.append({'role': 'user', 'content': user_input})
             
-    return render_template('index.html', response=response, user_input=user_input)
+            if assistant:
+                try:
+                    # Build Context from History
+                    context_messages = chat_history[-10:] 
+                    full_prompt = ""
+                    for msg in context_messages:
+                        role = "User" if msg['role'] == 'user' else "AI"
+                        full_prompt += f"{role}: {msg['content']}\n"
+                    
+                    # Append AI label to prompt for response
+                    full_prompt += "AI:"
+                    
+                    # Get response
+                    raw_response = assistant.get_response(full_prompt)
+                    formatted_response = assistant.format_response(raw_response)
+                    
+                    # Add AI Message
+                    chat_history.append({'role': 'ai', 'content': formatted_response})
+                    
+                except Exception as e:
+                    error_msg = f"Error processing request: {str(e)}"
+                    chat_history.append({'role': 'ai', 'content': error_msg})
+            else:
+                # Handle missing assistant
+                error_msg = "Error: AI Assistant not initialized. Check server logs."
+                chat_history.append({'role': 'ai', 'content': error_msg})
+                
+    return render_template('index.html', chat_history=chat_history)
 
 if __name__ == '__main__':
     app.run(debug=True)
